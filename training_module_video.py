@@ -154,37 +154,64 @@ def evaluate(model, loader, criterion, device):
     return total_loss / total, correct / total
 
 
-def main():
-    parser = argparse.ArgumentParser()
+def parse_args():
+    parser = argparse.ArgumentParser("Train WLASL video model")
+
     parser.add_argument("--json", type=str, default="WLASL_v0.3.json")
-    parser.add_argument("--video-root", type=str, required=True)
-    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--video-root", type=str, default="videos",
+                        help="Thư mục chứa video_id.mp4")
+
+    parser.add_argument("--epochs", type=int, default=12)   # <== mặc định 12 epoch
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--num-frames", type=int, default=16)
     parser.add_argument("--save", type=str, default="best_wlasl.pth")
 
-    args = parser.parse_args()
+    # Chặn lỗi SystemExit khi debug trong VSCode
+    try:
+        args = parser.parse_args()
+    except SystemExit:
+        print("\n⚠ Argparse không nhận được tham số. Dùng DEFAULT cho VSCode Debug.\n")
+        class Args:
+            json = "WLASL_v0.3.json"
+            video_root = "videos"
+            epochs = 12
+            batch_size = 4
+            lr = 1e-4
+            num_frames = 16
+            save = "debug_wlasl.pth"
+
+        args = Args()
+
+    return args
+
+
+def main():
+    args = parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Using:", device)
+    print("Using device:", device)
 
-    # Load JSON + splits
+    # 1) Load annotation
     splits, gloss2id = load_wlasl(args.json)
     num_classes = len(gloss2id)
 
-    # Create datasets
-    train_ds = WLASLDataset(splits["train"], args.video_root,
-                            args.num_frames, train=True)
-    val_ds = WLASLDataset(splits["val"], args.video_root,
-                          args.num_frames, train=False)
+    # 2) Dataset
+    train_ds = WLASLDataset(
+        splits["train"], args.video_root,
+        args.num_frames, train=True
+    )
+    val_ds = WLASLDataset(
+        splits["val"], args.video_root,
+        args.num_frames, train=False
+    )
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size,
                               shuffle=True, num_workers=4)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size,
                             shuffle=False, num_workers=4)
 
-    # Model
+    # 3) Model
     model = DenseNetWithTemporalResidual(
         num_classes=num_classes,
         temporal_mode="tcn",
@@ -194,30 +221,33 @@ def main():
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
-    best_acc = 0
+    best_val_acc = 0
 
-    # Training loop
+    # 4) Train loop
     for epoch in range(1, args.epochs + 1):
-
         train_loss, train_acc = train_one_epoch(
-            model, train_loader, criterion, optimizer, device)
-
+            model, train_loader, criterion, optimizer, device
+        )
         val_loss, val_acc = evaluate(
-            model, val_loader, criterion, device)
+            model, val_loader, criterion, device
+        )
 
-        print(f"[Epoch {epoch}] "
-              f"Train Loss={train_loss:.4f} Acc={train_acc:.4f} | "
-              f"Val Loss={val_loss:.4f} Acc={val_acc:.4f}")
+        print(
+            f"[Epoch {epoch}/{args.epochs}] "
+            f"Train Loss={train_loss:.4f} Acc={train_acc:.4f} | "
+            f"Val Loss={val_loss:.4f} Acc={val_acc:.4f}"
+        )
 
-        if val_acc > best_acc:
-            best_acc = val_acc
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
             torch.save({
-                "model": model.state_dict(),
-                "gloss2id": gloss2id,
+                "model_state": model.state_dict(),
+                "gloss2id": gloss2id
             }, args.save)
-            print(f"  → Saved best model to {args.save} (Acc={val_acc:.4f})")
 
-    print("Done. Best Val Acc:", best_acc)
+            print(f"  → Saved BEST model to {args.save} (Val Acc={val_acc:.4f})")
+
+    print("\nTraining completed. Best Val Accuracy:", best_val_acc)
 
 
 if __name__ == "__main__":
